@@ -445,6 +445,7 @@ def make_policy(
     ds_meta: LeRobotDatasetMetadata | None = None,
     env_cfg: EnvConfig | None = None,
     rename_map: dict[str, str] | None = None,
+    trainable_peft: bool = False,
 ) -> PreTrainedPolicy:
     """
     Instantiate a policy model.
@@ -555,7 +556,14 @@ def make_policy(
             )
 
         policy = policy_cls.from_pretrained(**kwargs)
-        policy = PeftModel.from_pretrained(policy, peft_pretrained_path, config=peft_config)
+        # When resuming training from a PEFT checkpoint, reload the saved adapter in
+        # trainable mode so the optimizer can update the same adapter weights.
+        policy = PeftModel.from_pretrained(
+            policy,
+            peft_pretrained_path,
+            config=peft_config,
+            is_trainable=trainable_peft,
+        )
 
     else:
         # Make a fresh policy.

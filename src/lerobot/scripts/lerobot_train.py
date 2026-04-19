@@ -251,9 +251,10 @@ def train(cfg: TrainPipelineConfig, accelerator: "Accelerator | None" = None):
         cfg=cfg.policy,
         ds_meta=dataset.meta,
         rename_map=cfg.rename_map,
+        trainable_peft=cfg.resume,
     )
 
-    if cfg.peft is not None:
+    if cfg.peft is not None and not cfg.policy.use_peft:
         logging.info("Using PEFT! Wrapping model.")
         # Convert CLI peft config to dict for overrides
         peft_cli_overrides = dataclasses.asdict(cfg.peft)
