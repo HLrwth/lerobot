@@ -120,3 +120,5 @@ class PeftConfig:
 
     # LoRA scaling factor. Only applies to LoRA-style PEFT methods.
     lora_alpha: int | None = None
+
+    exclude_modules: list[str] | str | None = None
