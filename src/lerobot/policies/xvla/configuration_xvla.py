@@ -22,7 +22,12 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from lerobot.configs import FeatureType, NormalizationMode, PolicyFeature, PreTrainedConfig
-from lerobot.optim import CosineDecayWithWarmupSchedulerConfig, XVLAAdamWConfig
+from lerobot.optim import (
+    CosineDecayWithWarmupSchedulerConfig,
+    XVLAAdamWConfig,
+    XVLAPeftAdamWConfig,
+    XVLAPeftSchedulerConfig,
+)
 from lerobot.utils.constants import OBS_IMAGES
 
 # Conditional import for type checking and lazy loading
@@ -110,6 +115,15 @@ class XVLAConfig(PreTrainedConfig):
     scheduler_warmup_steps: int = 1_000
     scheduler_decay_steps: int = 30_000
     scheduler_decay_lr: float = 2.5e-6
+    # Original X-VLA PEFT schedule compatibility.
+    # `peft_warmup_steps` is the duration of the warmup phase *after* `peft_freeze_steps`,
+    # not an absolute step index where warmup ends.
+    use_original_peft_training: bool = False
+    peft_learning_coef: float = 1.0
+    peft_freeze_steps: int = 1_000
+    peft_warmup_steps: int = 2_000
+    peft_use_cosine_decay: bool = False
+    peft_min_lr_ratio: float = 0.1
 
     def __post_init__(self) -> None:
         super().__post_init__()
@@ -170,6 +184,16 @@ class XVLAConfig(PreTrainedConfig):
         - Full LR for transformer/action head
         - Configurable LR for soft-prompts (with optional warm-up)
         """
+        if self.use_original_peft_training:
+            return XVLAPeftAdamWConfig(
+                lr=self.optimizer_lr,
+                betas=(0.9, 0.95),
+                eps=self.optimizer_eps,
+                weight_decay=self.optimizer_weight_decay,
+                grad_clip_norm=1.0,
+                learning_coef=self.peft_learning_coef,
+            )
+
         return XVLAAdamWConfig(
             lr=self.optimizer_lr,
             betas=self.optimizer_betas,
@@ -181,6 +205,16 @@ class XVLAConfig(PreTrainedConfig):
         )
 
     def get_scheduler_preset(self) -> CosineDecayWithWarmupSchedulerConfig:
+        if self.use_original_peft_training:
+            return XVLAPeftSchedulerConfig(
+                num_warmup_steps=self.peft_warmup_steps,
+                freeze_steps=self.peft_freeze_steps,
+                peak_lr=self.optimizer_lr,
+                learning_coef=self.peft_learning_coef,
+                min_lr_ratio=self.peft_min_lr_ratio,
+                use_cosine_decay=self.peft_use_cosine_decay,
+            )
+
         return CosineDecayWithWarmupSchedulerConfig(
             peak_lr=self.optimizer_lr,
             decay_lr=self.scheduler_decay_lr,

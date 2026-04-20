@@ -226,6 +226,71 @@ class XVLAAdamWConfig(OptimizerConfig):
         )
 
 
+@OptimizerConfig.register_subclass("xvla-peft-adamw")
+@dataclass
+class XVLAPeftAdamWConfig(OptimizerConfig):
+    """AdamW grouping that mirrors X-VLA's original `peft_train.py`."""
+
+    lr: float = 1e-4
+    betas: tuple[float, float] = (0.9, 0.95)
+    eps: float = 1e-8
+    weight_decay: float = 0.0
+    grad_clip_norm: float = 1.0
+    learning_coef: float = 1.0
+
+    def build(self, params: OptimizerParams) -> torch.optim.Optimizer:
+        assert isinstance(params, dict), "XVLA PEFT optimizer requires `named_parameters()` as inputs."
+
+        vlm_group, transformer_core_group, soft_prompt_group, action_head_group = [], [], [], []
+        for name, param in params.items():
+            if not param.requires_grad:
+                continue
+
+            name_l = name.lower()
+            if "soft_prompt_hub" in name_l:
+                soft_prompt_group.append(param)
+            elif "action_encoder" in name_l or "action_decoder" in name_l:
+                action_head_group.append(param)
+            elif "vlm" in name_l:
+                vlm_group.append(param)
+            else:
+                transformer_core_group.append(param)
+
+        param_groups: list[dict[str, Any]] = [
+            {
+                "params": vlm_group,
+                "lr": self.lr * self.learning_coef,
+                "weight_decay": self.weight_decay,
+                "name": "vlm",
+            },
+            {
+                "params": transformer_core_group,
+                "lr": self.lr,
+                "weight_decay": self.weight_decay,
+                "name": "transformer_core",
+            },
+            {
+                "params": soft_prompt_group,
+                "lr": self.lr * self.learning_coef,
+                "weight_decay": self.weight_decay,
+                "name": "soft_prompts",
+            },
+            {
+                "params": action_head_group,
+                "lr": self.lr,
+                "weight_decay": self.weight_decay,
+                "name": "action_heads",
+            },
+        ]
+        param_groups = [group for group in param_groups if group["params"]]
+
+        return torch.optim.AdamW(
+            param_groups,
+            betas=self.betas,
+            eps=self.eps,
+        )
+
+
 @OptimizerConfig.register_subclass("multi_adam")
 @dataclass
 class MultiAdamConfig(OptimizerConfig):

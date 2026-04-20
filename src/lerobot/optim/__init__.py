@@ -19,6 +19,7 @@ from .optimizers import (
     OptimizerConfig as OptimizerConfig,
     SGDConfig as SGDConfig,
     XVLAAdamWConfig as XVLAAdamWConfig,
+    XVLAPeftAdamWConfig as XVLAPeftAdamWConfig,
     load_optimizer_state,
     save_optimizer_state,
 )
@@ -26,6 +27,7 @@ from .schedulers import (
     CosineDecayWithWarmupSchedulerConfig as CosineDecayWithWarmupSchedulerConfig,
     DiffuserSchedulerConfig as DiffuserSchedulerConfig,
     LRSchedulerConfig as LRSchedulerConfig,
+    XVLAPeftSchedulerConfig as XVLAPeftSchedulerConfig,
     VQBeTSchedulerConfig as VQBeTSchedulerConfig,
     load_scheduler_state,
     save_scheduler_state,
@@ -43,10 +45,12 @@ __all__ = [
     "OptimizerConfig",
     "SGDConfig",
     "XVLAAdamWConfig",
+    "XVLAPeftAdamWConfig",
     # Scheduler configs
     "CosineDecayWithWarmupSchedulerConfig",
     "DiffuserSchedulerConfig",
     "LRSchedulerConfig",
+    "XVLAPeftSchedulerConfig",
     "VQBeTSchedulerConfig",
     # State management
     "load_optimizer_state",

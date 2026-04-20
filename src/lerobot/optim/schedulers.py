@@ -138,6 +138,84 @@ class CosineDecayWithWarmupSchedulerConfig(LRSchedulerConfig):
         return LambdaLR(optimizer, lr_lambda, -1)
 
 
+@LRSchedulerConfig.register_subclass("xvla_peft")
+@dataclass
+class XVLAPeftSchedulerConfig(LRSchedulerConfig):
+    """Scheduler that reproduces X-VLA's group-wise PEFT LR logic.
+
+    `num_warmup_steps` is the duration of the post-freeze warmup phase. For example,
+    with `freeze_steps=1000` and `num_warmup_steps=1000`, steps 0-999 are frozen and
+    steps 1000-1999 linearly warm up into joint training.
+    """
+
+    num_warmup_steps: int
+    freeze_steps: int
+    peak_lr: float
+    learning_coef: float = 1.0
+    min_lr_ratio: float = 0.1
+    use_cosine_decay: bool = False
+
+    def build(self, optimizer: Optimizer, num_training_steps: int) -> LambdaLR:
+        base_lrs: list[float] = []
+        group_names: list[str] = []
+
+        for group in optimizer.param_groups:
+            name = group.get("name")
+            if name == "vlm":
+                base_lr = self.peak_lr * self.learning_coef
+            elif name == "soft_prompts":
+                base_lr = self.peak_lr * self.learning_coef
+            else:
+                base_lr = self.peak_lr
+
+            group["lr"] = base_lr
+            group_names.append(name)
+            base_lrs.append(base_lr)
+
+        def desired_lr(step: int, group_name: str) -> float:
+            base_lr = self.peak_lr * self.learning_coef if group_name in {"vlm", "soft_prompts"} else self.peak_lr
+
+            if step < self.freeze_steps:
+                if group_name in {"vlm", "transformer_core"}:
+                    return 0.0
+                return base_lr
+
+            if not self.use_cosine_decay:
+                return base_lr
+
+            progress = step - self.freeze_steps
+            if progress < self.num_warmup_steps:
+                return base_lr * (progress / max(1, self.num_warmup_steps))
+
+            remain = max(1, num_training_steps - (self.freeze_steps + self.num_warmup_steps))
+            ratio = 0.5 * (1 + math.cos(math.pi * min(1.0, (progress - self.num_warmup_steps) / remain)))
+            return base_lr * (self.min_lr_ratio + (1 - self.min_lr_ratio) * ratio)
+
+        lr_lambdas = []
+        for base_lr, group_name in zip(base_lrs, group_names, strict=True):
+            if base_lr == 0.0:
+                lr_lambdas.append(lambda current_step: 1.0)
+                continue
+
+            # The scheduler is stepped after the optimizer update in LeRobot, so
+            # the next batch should observe step=current_step+1.
+            lr_lambdas.append(
+                lambda current_step, group_name=group_name, base_lr=base_lr: desired_lr(
+                    current_step + 1, group_name
+                )
+                / base_lr
+            )
+
+        scheduler = LambdaLR(optimizer, lr_lambdas, -1)
+
+        initial_lrs = [desired_lr(0, group_name) for group_name in group_names]
+        for group, initial_lr in zip(optimizer.param_groups, initial_lrs, strict=True):
+            group["lr"] = initial_lr
+        scheduler._last_lr = initial_lrs
+
+        return scheduler
+
+
 def save_scheduler_state(scheduler: LRScheduler, save_dir: Path) -> None:
     state_dict = scheduler.state_dict()
     write_json(state_dict, save_dir / SCHEDULER_STATE)
