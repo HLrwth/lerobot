@@ -38,7 +38,6 @@ from ..utils import populate_queues
 from .action_hub import build_action_space
 from .configuration_xvla import XVLAConfig
 from .soft_transformer import SoftPromptedTransformer
-
 # Florence2 config and modeling depend on transformers
 if TYPE_CHECKING or _transformers_available:
     from .configuration_florence2 import Florence2Config
@@ -373,10 +372,62 @@ class XVLAPolicy(PreTrainedPolicy):
         actions = batch[ACTION]
         if actions.ndim == 2:
             actions = actions.unsqueeze(1)
+        if actions.shape[-1] == 7:
+            actions = self._convert_axis_angle_actions_to_rotate6d(actions)
         actions = pad_tensor_along_dim(actions, self.config.chunk_size, dim=1)
         if actions.shape[-1] != self.model.dim_action:
             actions = pad_vector(actions, self.model.dim_action)
         return actions
+
+    def _convert_axis_angle_actions_to_rotate6d(self, actions: Tensor) -> Tensor:
+        # Convert [xyz, axis-angle, gripper] labels into the upstream-style
+        # [xyz, rotate6d, gripper] representation before padding to the 20D model space.
+        xyz = actions[..., :3]
+        rot6d = self._axis_angle_to_rotate6d(actions[..., 3:6].reshape(-1, 3)).reshape(*actions.shape[:-1], 6)
+        gripper = actions[..., 6:7]
+        return torch.cat([xyz, rot6d, gripper], dim=-1)
+
+    def _axis_angle_to_rotate6d(self, axis_angle: Tensor) -> Tensor:
+        rot_mats = self._axis_angle_to_matrix(axis_angle.to(torch.float32))
+        return self._mat_to_rotate6d(rot_mats)
+
+    def _axis_angle_to_matrix(self, axis_angle: Tensor) -> Tensor:
+        if axis_angle.ndim != 2 or axis_angle.shape[-1] != 3:
+            raise ValueError(f"Expected axis-angle with shape (N, 3), got {tuple(axis_angle.shape)}")
+
+        angle = torch.linalg.norm(axis_angle, dim=-1, keepdim=True)
+        axis = axis_angle / angle.clamp_min(1e-8)
+
+        x = axis[:, 0]
+        y = axis[:, 1]
+        z = axis[:, 2]
+        theta = angle[:, 0]
+
+        cos_t = torch.cos(theta)
+        sin_t = torch.sin(theta)
+        one_minus_cos = 1.0 - cos_t
+
+        rot = torch.zeros((axis_angle.shape[0], 3, 3), dtype=axis_angle.dtype, device=axis_angle.device)
+        rot[:, 0, 0] = cos_t + x * x * one_minus_cos
+        rot[:, 0, 1] = x * y * one_minus_cos - z * sin_t
+        rot[:, 0, 2] = x * z * one_minus_cos + y * sin_t
+        rot[:, 1, 0] = y * x * one_minus_cos + z * sin_t
+        rot[:, 1, 1] = cos_t + y * y * one_minus_cos
+        rot[:, 1, 2] = y * z * one_minus_cos - x * sin_t
+        rot[:, 2, 0] = z * x * one_minus_cos - y * sin_t
+        rot[:, 2, 1] = z * y * one_minus_cos + x * sin_t
+        rot[:, 2, 2] = cos_t + z * z * one_minus_cos
+
+        zero_mask = angle[:, 0] < 1e-8
+        if zero_mask.any():
+            rot[zero_mask] = torch.eye(3, dtype=axis_angle.dtype, device=axis_angle.device)
+
+        return rot
+
+    def _mat_to_rotate6d(self, rot_mats: Tensor) -> Tensor:
+        if rot_mats.ndim != 3 or rot_mats.shape[1:] != (3, 3):
+            raise ValueError(f"mat_to_rot6d expects shape (N, 3, 3), got {tuple(rot_mats.shape)}")
+        return torch.cat([rot_mats[:, :3, 0], rot_mats[:, :3, 1]], dim=-1)
 
     def _build_model_inputs(self, batch: dict[str, Tensor]) -> dict[str, Tensor]:
         input_ids = batch[OBS_LANGUAGE_TOKENS]
