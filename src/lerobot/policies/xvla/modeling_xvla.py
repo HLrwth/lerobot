@@ -374,6 +374,7 @@ class XVLAPolicy(PreTrainedPolicy):
             actions = actions.unsqueeze(1)
         if actions.shape[-1] == 7:
             actions = self._convert_axis_angle_actions_to_rotate6d(actions)
+        actions = self._normalize_gripper_targets(actions)
         actions = pad_tensor_along_dim(actions, self.config.chunk_size, dim=1)
         if actions.shape[-1] != self.model.dim_action:
             actions = pad_vector(actions, self.model.dim_action)
@@ -386,6 +387,15 @@ class XVLAPolicy(PreTrainedPolicy):
         rot6d = self._axis_angle_to_rotate6d(actions[..., 3:6].reshape(-1, 3)).reshape(*actions.shape[:-1], 6)
         gripper = actions[..., 6:7]
         return torch.cat([xyz, rot6d, gripper], dim=-1)
+
+    def _normalize_gripper_targets(self, actions: Tensor) -> Tensor:
+        # XVLA uses BCEWithLogitsLoss for gripper channels, so labels must be in [0, 1].
+        # Some LIBERO-style datasets store gripper commands in {-1, 1}; remap those here
+        # while leaving already-normalized [0, 1] labels untouched.
+        gripper = actions[..., -1]
+        if torch.any(gripper < 0):
+            actions[..., -1] = torch.where(gripper > 0, 1.0, 0.0).to(actions.dtype)
+        return actions
 
     def _axis_angle_to_rotate6d(self, axis_angle: Tensor) -> Tensor:
         rot_mats = self._axis_angle_to_matrix(axis_angle.to(torch.float32))
