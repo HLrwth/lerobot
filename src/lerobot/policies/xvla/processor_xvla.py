@@ -62,6 +62,9 @@ def make_xvla_pre_post_processors(
     """
 
     features = {**config.input_features, **config.output_features}
+    if OBS_STATE in features and features[OBS_STATE].shape == (8,):
+        features[OBS_STATE] = PolicyFeature(type=features[OBS_STATE].type, shape=(10,))
+
     input_steps = [
         RenameObservationsProcessorStep(rename_map={}),
         AddBatchDimensionProcessorStep(),
@@ -71,6 +74,7 @@ def make_xvla_pre_post_processors(
             padding=config.pad_language_to,
             padding_side=config.tokenizer_padding_side,
         ),
+        XVLALiberoStateTo10DProcessorStep(),
         XVLAImageToFloatProcessorStep(),
         XVLAImageNetNormalizeProcessorStep(),
         XVLAAddDomainIdProcessorStep(),
@@ -104,6 +108,98 @@ def make_xvla_pre_post_processors(
 
 # Custom XVLA processor steps
 @dataclass
+@ProcessorStepRegistry.register(name="xvla_libero_state_to_10d")
+class XVLALiberoStateTo10DProcessorStep(ProcessorStep):
+    """Convert 8D LIBERO state [xyz, axis-angle, gripper(2)] into XVLA's 10D state.
+
+    XVLA rollout/eval uses a 10D proprio layout before zero-padding to the model's
+    20D internal space: [xyz(3), rot6d(6), extra(1)]. During dataset training on
+    LIBERO we only have the flattened 8D state, so we reconstruct the 6D rotation
+    from axis-angle and keep the final auxiliary slot at zero to match eval.
+    """
+
+    def __call__(self, transition: EnvTransition) -> EnvTransition:
+        new_transition = transition.copy()
+        obs = new_transition.get(TransitionKey.OBSERVATION, {})
+        if obs is None or OBS_STATE not in obs:
+            return new_transition
+
+        obs = obs.copy()
+        state = obs[OBS_STATE]
+        if not isinstance(state, torch.Tensor):
+            return new_transition
+
+        if state.shape[-1] != 8:
+            # Keep already-converted states unchanged so the step is safe when loading
+            # checkpoints or datasets that already store XVLA-style proprio.
+            return new_transition
+
+        xyz = state[..., :3].to(torch.float32)
+        axis_angle = state[..., 3:6].to(torch.float32)
+        rot6d = self._axis_angle_to_rotate6d(axis_angle)
+        extra = torch.zeros((*state.shape[:-1], 1), dtype=torch.float32, device=state.device)
+        obs[OBS_STATE] = torch.cat((xyz, rot6d, extra), dim=-1)
+
+        new_transition[TransitionKey.OBSERVATION] = obs
+        return new_transition
+
+    def transform_features(
+        self, features: dict[PipelineFeatureType, dict[str, PolicyFeature]]
+    ) -> dict[PipelineFeatureType, dict[str, PolicyFeature]]:
+        new_features = {
+            ft: {key: PolicyFeature(type=feat.type, shape=feat.shape) for key, feat in feats.items()}
+            for ft, feats in features.items()
+        }
+        observation_features = new_features.get(PipelineFeatureType.OBSERVATION, {})
+        if OBS_STATE in observation_features and observation_features[OBS_STATE].shape == (8,):
+            observation_features[OBS_STATE] = PolicyFeature(
+                type=observation_features[OBS_STATE].type,
+                shape=(10,),
+            )
+        return new_features
+
+    def get_config(self) -> dict[str, Any]:
+        return {}
+
+    def _axis_angle_to_rotate6d(self, axis_angle: torch.Tensor) -> torch.Tensor:
+        rot_mats = self._axis_angle_to_matrix(axis_angle)
+        return torch.cat((rot_mats[..., :3, 0], rot_mats[..., :3, 1]), dim=-1)
+
+    def _axis_angle_to_matrix(self, axis_angle: torch.Tensor) -> torch.Tensor:
+        if axis_angle.shape[-1] != 3:
+            raise ValueError(f"Expected axis-angle vectors with last dim 3, got {tuple(axis_angle.shape)}")
+
+        angle = torch.linalg.norm(axis_angle, dim=-1, keepdim=True)
+        axis = axis_angle / angle.clamp_min(1e-8)
+
+        x = axis[..., 0]
+        y = axis[..., 1]
+        z = axis[..., 2]
+        theta = angle[..., 0]
+
+        cos_t = torch.cos(theta)
+        sin_t = torch.sin(theta)
+        one_minus_cos = 1.0 - cos_t
+
+        rot = torch.zeros((*axis_angle.shape[:-1], 3, 3), dtype=axis_angle.dtype, device=axis_angle.device)
+        rot[..., 0, 0] = cos_t + x * x * one_minus_cos
+        rot[..., 0, 1] = x * y * one_minus_cos - z * sin_t
+        rot[..., 0, 2] = x * z * one_minus_cos + y * sin_t
+        rot[..., 1, 0] = y * x * one_minus_cos + z * sin_t
+        rot[..., 1, 1] = cos_t + y * y * one_minus_cos
+        rot[..., 1, 2] = y * z * one_minus_cos - x * sin_t
+        rot[..., 2, 0] = z * x * one_minus_cos - y * sin_t
+        rot[..., 2, 1] = z * y * one_minus_cos + x * sin_t
+        rot[..., 2, 2] = cos_t + z * z * one_minus_cos
+
+        zero_mask = angle[..., 0] < 1e-8
+        if zero_mask.any():
+            rot[zero_mask] = torch.eye(3, dtype=axis_angle.dtype, device=axis_angle.device)
+
+        return rot
+
+
+@dataclass
 class LiberoProcessorStep(ObservationProcessorStep):
     """
     Processes LIBERO observations into the LeRobot format.
@@ -134,7 +230,7 @@ class LiberoProcessorStep(ObservationProcessorStep):
             if key.startswith(f"{OBS_IMAGES}."):
                 img = processed_obs[key]
 
-                if key == f"{OBS_IMAGES}.image":
+                if key in {f"{OBS_IMAGES}.image", f"{OBS_IMAGES}.image2"}:
                     # Flip both H and W
                     img = torch.flip(img, dims=[2, 3])
 
