@@ -230,7 +230,7 @@ class LiberoProcessorStep(ObservationProcessorStep):
             if key.startswith(f"{OBS_IMAGES}."):
                 img = processed_obs[key]
 
-                if key in {f"{OBS_IMAGES}.image", f"{OBS_IMAGES}.image2"}:
+                if key == f"{OBS_IMAGES}.image":
                     # Flip both H and W
                     img = torch.flip(img, dims=[2, 3])
 
