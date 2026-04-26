@@ -299,6 +299,33 @@ def make_pre_post_processors(
             to_transition=batch_to_transition,
             to_output=transition_to_batch,
         )
+
+        # Inject XVLALiberoStateTo10DProcessorStep if missing from the saved JSON.
+        # This happens when loading the base model (which predates this step). Once
+        # injected, the step is written into the checkpoint JSON on the first save,
+        # so all subsequent resumes load it naturally and has_step will be True.
+        if isinstance(policy_cfg, XVLAConfig):
+            from lerobot.utils.constants import OBS_STATE
+
+            from .xvla.processor_xvla import XVLALiberoStateTo10DProcessorStep
+
+            has_step = any(isinstance(s, XVLALiberoStateTo10DProcessorStep) for s in preprocessor.steps)
+            state_feature = policy_cfg.input_features.get(OBS_STATE)
+            if not has_step and state_feature is not None and state_feature.shape == (8,):
+                insert_idx = next(
+                    (
+                        i
+                        for i, s in enumerate(preprocessor.steps)
+                        if s.__class__.__name__ == "TokenizerProcessorStep"
+                    ),
+                    3,
+                )
+                preprocessor.steps.insert(insert_idx, XVLALiberoStateTo10DProcessorStep())
+                logging.info(
+                    "Inserted XVLALiberoStateTo10DProcessorStep into preprocessor "
+                    f"(was missing from saved JSON; inserted at index {insert_idx})."
+                )
+
         postprocessor = PolicyProcessorPipeline.from_pretrained(
             pretrained_model_name_or_path=pretrained_path,
             config_filename=kwargs.get(
