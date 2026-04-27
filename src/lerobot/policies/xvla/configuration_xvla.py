@@ -54,6 +54,7 @@ class XVLAConfig(PreTrainedConfig):
     n_obs_steps: int = 1
     chunk_size: int = 32
     n_action_steps: int = 32
+    action_chunk_start: int = 0
     dtype: str = "float32"  # Options: "bfloat16", "float32"
 
     normalization_mapping: dict[str, NormalizationMode] = field(
@@ -67,7 +68,7 @@ class XVLAConfig(PreTrainedConfig):
     # Florence2 backbone and tokenizer configuration
     florence_config: dict[str, Any] = field(default_factory=dict)
     tokenizer_name: str = "facebook/bart-large"
-    tokenizer_max_length: int = 64
+    tokenizer_max_length: int = 50
     tokenizer_padding_side: str = "right"
     pad_language_to: str = "max_length"
 
@@ -134,6 +135,10 @@ class XVLAConfig(PreTrainedConfig):
             raise ValueError(
                 f"`n_action_steps` ({self.n_action_steps}) must be <= `chunk_size` ({self.chunk_size})."
             )
+        if self.action_chunk_start < 0:
+            raise ValueError("`action_chunk_start` must be >= 0.")
+        if self.domain_id < 0:
+            raise ValueError("`domain_id` must be >= 0.")
         if self.num_image_views is not None and self.num_image_views <= 0:
             raise ValueError("`num_image_views` must be > 0 when specified.")
         if self.dtype not in ["bfloat16", "float32"]:
@@ -228,7 +233,7 @@ class XVLAConfig(PreTrainedConfig):
 
     @property
     def action_delta_indices(self) -> list[int]:
-        return list(range(self.chunk_size))
+        return list(range(self.action_chunk_start, self.action_chunk_start + self.chunk_size))
 
     @property
     def reward_delta_indices(self) -> list[int] | None:
