@@ -78,6 +78,7 @@ class XVLAConfig(PreTrainedConfig):
     num_heads: int = 16
     mlp_ratio: float = 4.0
     num_domains: int = 30
+    domain_id: int = 0
     len_soft_prompts: int = 32
     dim_time: int = 32
     max_len_seq: int = 512

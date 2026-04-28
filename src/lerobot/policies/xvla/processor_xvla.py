@@ -77,7 +77,7 @@ def make_xvla_pre_post_processors(
         XVLALiberoStateTo10DProcessorStep(),
         XVLAImageToFloatProcessorStep(),
         XVLAImageNetNormalizeProcessorStep(),
-        XVLAAddDomainIdProcessorStep(),
+        XVLAAddDomainIdProcessorStep(domain_id=config.domain_id),
         DeviceProcessorStep(device=config.device),
         NormalizerProcessorStep(
             features=features, norm_map=config.normalization_mapping, stats=dataset_stats
@@ -641,7 +641,7 @@ def make_xvla_libero_pre_post_processors() -> tuple[
     pre_processor_steps: list[ProcessorStep] = []
     post_processor_steps: list[ProcessorStep] = []
     pre_processor_steps.extend(
-        [LiberoProcessorStep(), XVLAImageNetNormalizeProcessorStep(), XVLAAddDomainIdProcessorStep()]
+        [LiberoProcessorStep(), XVLAImageNetNormalizeProcessorStep(), XVLAAddDomainIdProcessorStep(domain_id=3)]
     )
     post_processor_steps.extend([XVLARotation6DToAxisAngleProcessorStep()])
     return (
